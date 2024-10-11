@@ -421,71 +421,117 @@ export function evaluateMacros(content, env) {
 
     const rawContent = content;
 
-    // Legacy non-macro substitutions
-    content = content.replace(/<USER>/gi, typeof env.user === 'function' ? env.user() : env.user);
-    content = content.replace(/<BOT>/gi, typeof env.char === 'function' ? env.char() : env.char);
-    content = content.replace(/<CHAR>/gi, typeof env.char === 'function' ? env.char() : env.char);
-    content = content.replace(/<CHARIFNOTGROUP>/gi, typeof env.group === 'function' ? env.group() : env.group);
-    content = content.replace(/<GROUP>/gi, typeof env.group === 'function' ? env.group() : env.group);
+    // split the content into code and non-code blocks
+    function splitContentIntoSegments(content) {
+        const segments = [];
+        const regex = /(```[\s\S]*?```)/g;
+        let match;
+        let lastIndex = 0;
 
-    // Short circuit if there are no macros
-    if (!content.includes('{{')) {
-        return content;
+        while ((match = regex.exec(content)) !== null) {
+            // before code block
+            if (match.index > lastIndex) {
+                segments.push({ content: content.slice(lastIndex, match.index), isCodeBlock: false });
+            }
+            // code block itself
+            segments.push({ content: match[0], isCodeBlock: true });
+            lastIndex = regex.lastIndex;
+        }
+
+        // text after code block
+        if (lastIndex < content.length) {
+            segments.push({ content: content.slice(lastIndex), isCodeBlock: false });
+        }
+
+        return segments;
     }
 
-    content = diceRollReplace(content);
-    content = replaceInstructMacros(content, env);
-    content = replaceVariableMacros(content);
-    content = content.replace(/{{newline}}/gi, '\n');
-    content = content.replace(/(?:\r?\n)*{{trim}}(?:\r?\n)*/gi, '');
-    content = content.replace(/{{noop}}/gi, '');
-    content = content.replace(/{{input}}/gi, () => String($('#send_textarea').val()));
+    const segments = splitContentIntoSegments(content);
 
-    // Add all registered macros to the env object
-    const nonce = uuidv4();
-    MacrosParser.populateEnv(env);
+    // Legacy non-macro substitutions on non-code segments
+    segments.forEach(segment => {
+        if (!segment.isCodeBlock) {
+            segment.content = segment.content.replace(/<USER>/gi, typeof env.user === 'function' ? env.user() : env.user);
+            segment.content = segment.content.replace(/<BOT>/gi, typeof env.char === 'function' ? env.char() : env.char);
+            segment.content = segment.content.replace(/<CHAR>/gi, typeof env.char === 'function' ? env.char() : env.char);
+            segment.content = segment.content.replace(/<CHARIFNOTGROUP>/gi, typeof env.group === 'function' ? env.group() : env.group);
+            segment.content = segment.content.replace(/<GROUP>/gi, typeof env.group === 'function' ? env.group() : env.group);
+        }
+    });
 
-    // Substitute passed-in variables
-    for (const varName in env) {
-        if (!Object.hasOwn(env, varName)) continue;
-
-        content = content.replace(new RegExp(`{{${escapeRegex(varName)}}}`, 'gi'), () => {
-            const param = env[varName];
-            const value = MacrosParser.sanitizeMacroValue(typeof param === 'function' ? param(nonce) : param);
-            return value;
-        });
+    // Short circuit if there are no macros outside of code blocks
+    const containsMacros = segments.some(segment => !segment.isCodeBlock && segment.content.includes('{{'));
+    if (!containsMacros) {
+        return segments.map(segment => segment.content).join('');
     }
 
-    content = content.replace(/{{maxPrompt}}/gi, () => String(getMaxContextSize()));
-    content = content.replace(/{{lastMessage}}/gi, () => getLastMessage());
-    content = content.replace(/{{lastMessageId}}/gi, () => String(getLastMessageId() ?? ''));
-    content = content.replace(/{{lastUserMessage}}/gi, () => getLastUserMessage());
-    content = content.replace(/{{lastCharMessage}}/gi, () => getLastCharMessage());
-    content = content.replace(/{{firstIncludedMessageId}}/gi, () => String(getFirstIncludedMessageId() ?? ''));
-    content = content.replace(/{{lastSwipeId}}/gi, () => String(getLastSwipeId() ?? ''));
-    content = content.replace(/{{currentSwipeId}}/gi, () => String(getCurrentSwipeId() ?? ''));
+    // Process macro replacements on non-code segments only
+    segments.forEach(segment => {
+        if (!segment.isCodeBlock) {
+            let content = segment.content;
 
-    content = content.replace(/\{\{\/\/([\s\S]*?)\}\}/gm, '');
+            content = diceRollReplace(content);
+            content = replaceInstructMacros(content, env);
+            content = replaceVariableMacros(content);
+            content = content.replace(/{{newline}}/gi, '\n');
+            content = content.replace(/(?:\r?\n)*{{trim}}(?:\r?\n)*/gi, '');
+            content = content.replace(/{{noop}}/gi, '');
+            content = content.replace(/{{input}}/gi, () => String($('#send_textarea').val()));
 
-    content = content.replace(/{{time}}/gi, () => moment().format('LT'));
-    content = content.replace(/{{date}}/gi, () => moment().format('LL'));
-    content = content.replace(/{{weekday}}/gi, () => moment().format('dddd'));
-    content = content.replace(/{{isotime}}/gi, () => moment().format('HH:mm'));
-    content = content.replace(/{{isodate}}/gi, () => moment().format('YYYY-MM-DD'));
+            // Add all registered macros to the env object
+            const nonce = uuidv4();
+            MacrosParser.populateEnv(env);
 
-    content = content.replace(/{{datetimeformat +([^}]*)}}/gi, (_, format) => {
-        const formattedTime = moment().format(format);
-        return formattedTime;
+            // Substitute passed-in variables
+            for (const varName in env) {
+                if (!Object.hasOwn(env, varName)) continue;
+
+                content = content.replace(new RegExp(`{{${escapeRegex(varName)}}}`, 'gi'), () => {
+                    const param = env[varName];
+                    const value = MacrosParser.sanitizeMacroValue(typeof param === 'function' ? param(nonce) : param);
+                    return value;
+                });
+            }
+
+            content = content.replace(/{{maxPrompt}}/gi, () => String(getMaxContextSize()));
+            content = content.replace(/{{lastMessage}}/gi, () => getLastMessage());
+            content = content.replace(/{{lastMessageId}}/gi, () => String(getLastMessageId() ?? ''));
+            content = content.replace(/{{lastUserMessage}}/gi, () => getLastUserMessage());
+            content = content.replace(/{{lastCharMessage}}/gi, () => getLastCharMessage());
+            content = content.replace(/{{firstIncludedMessageId}}/gi, () => String(getFirstIncludedMessageId() ?? ''));
+            content = content.replace(/{{lastSwipeId}}/gi, () => String(getLastSwipeId() ?? ''));
+            content = content.replace(/{{currentSwipeId}}/gi, () => String(getCurrentSwipeId() ?? ''));
+            content = content.replace(/{{reverse\:(.+?)}}/gi, (_, str) => Array.from(str).reverse().join(''));
+
+            content = content.replace(/\{\{\/\/([\s\S]*?)\}\}/gm, '');
+
+            content = content.replace(/{{time}}/gi, () => moment().format('LT'));
+            content = content.replace(/{{date}}/gi, () => moment().format('LL'));
+            content = content.replace(/{{weekday}}/gi, () => moment().format('dddd'));
+            content = content.replace(/{{isotime}}/gi, () => moment().format('HH:mm'));
+            content = content.replace(/{{isodate}}/gi, () => moment().format('YYYY-MM-DD'));
+
+            content = content.replace(/{{datetimeformat +([^}]*)}}/gi, (_, format) => {
+                const formattedTime = moment().format(format);
+                return formattedTime;
+            });
+            content = content.replace(/{{idle_duration}}/gi, () => getTimeSinceLastMessage());
+            content = content.replace(/{{time_UTC([-+]\d+)}}/gi, (_, offset) => {
+                const utcOffset = parseInt(offset, 10);
+                const utcTime = moment().utc().utcOffset(utcOffset).format('LT');
+                return utcTime;
+            });
+            content = timeDiffReplace(content);
+            content = bannedWordsReplace(content);
+            content = randomReplace(content);
+            content = pickReplace(content, rawContent);
+
+            // Update the content back to the segment
+            segment.content = content;
+        }
     });
-    content = content.replace(/{{idle_duration}}/gi, () => getTimeSinceLastMessage());
-    content = content.replace(/{{time_UTC([-+]\d+)}}/gi, (_, offset) => {
-        const utcOffset = parseInt(offset, 10);
-        const utcTime = moment().utc().utcOffset(utcOffset).format('LT');
-        return utcTime;
-    });
-    content = timeDiffReplace(content);
-    content = bannedWordsReplace(content);
-    content = randomReplace(content);
-    content = pickReplace(content, rawContent);
-    return content;
+
+    // Join all segments (code blocks and parsed non-code blocks) back together
+    return segments.map(segment => segment.content).join('');
 }
+
